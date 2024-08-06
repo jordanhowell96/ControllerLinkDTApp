@@ -9,14 +9,15 @@ namespace ControllerLinkDTApp
     public partial class MainWindow : Window
     {
         private const int HOTKEY_ID = 9000; // Arbitrary ID for the hotkey
-        private const string STEAM_PATH = @"C:\Program Files (x86)\Steam\steam.exe";
         private const int WM_HOTKEY = 0x0312;
 
-        [DllImport("user32.dll")]
-        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+        [LibraryImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
-        [DllImport("user32.dll")]
-        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+        [LibraryImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool UnregisterHotKey(IntPtr hWnd, int id);
 
         public MainWindow()
         {
@@ -32,7 +33,7 @@ namespace ControllerLinkDTApp
             HwndSource source = HwndSource.FromHwnd(hwnd);
             source.AddHook(WndProc);
 
-            bool registered = RegisterHotKey(hwnd, HOTKEY_ID, 0, (uint)KeyInterop.VirtualKeyFromKey(System.Windows.Input.Key.F9));
+            RegisterHotKey(hwnd, HOTKEY_ID, 0, (uint)KeyInterop.VirtualKeyFromKey(System.Windows.Input.Key.F9));
         }
 
         protected override void OnClosed(EventArgs e)
@@ -52,7 +53,7 @@ namespace ControllerLinkDTApp
             return IntPtr.Zero;
         }
 
-        private void OnF9KeyPressed()
+        private void OnF9KeyPressed() 
         {
             try
             {
