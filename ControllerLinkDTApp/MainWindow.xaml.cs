@@ -95,10 +95,12 @@ namespace ControllerLinkDTApp
             if (e.Reason == SessionSwitchReason.SessionUnlock) 
             {
                 SendSerial("UNLOCK_ACK");
+                MessageBox.Show("UNLOCK_ACK");
             }
             if (await ReceiveSerialAsync("CONTROLLER_DETECTED", 10000, 20))
             {
                 SendSerial("INIT_ACK");
+                MessageBox.Show("INIT_ACK");
                 OpenSteam();
             }
         }
