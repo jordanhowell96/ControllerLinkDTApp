@@ -1,186 +1,209 @@
 ﻿using System.Diagnostics;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Interop;
-using System.Windows.Input;
 using System.IO.Ports;
 using Microsoft.Win32;
 using System.Threading;
+using System.Threading.Tasks;
 
+// Next steps:
+// GIT
+// Close start menu
+// One button start / prevent pc from connecting to controller during unlock
+// Option to sleep computer when steam is closed (only when a session is "active" through this program)
 
-// detect controller and launch steam when computer is unlocked
+// Refactoring
 
 namespace ControllerLinkDTApp
 {
     public partial class MainWindow : Window
     {
-        private const int HOTKEY_ID = 9000; // Arbitrary ID for the hotkey
-        private const int WM_HOTKEY = 0x0312;
-        private const string PASSKEY = "6890";
+        const string START_COMMAND = "START";
+        const string AWAKE_STATE = "AWAKE_STATE";
+        const string UNLOCKED_STATE = "UNLOCKED_STATE";
+        const int STATE_REFRESH = 1000;
+
         private SerialPort? _serialPort;
+        private CancellationTokenSource _cancellationTokenSource;
+        private bool _pcLocked = false;
 
-        [LibraryImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static partial bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-
-        [LibraryImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static partial bool UnregisterHotKey(IntPtr hWnd, int id);
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         public MainWindow()
         {
             InitializeComponent();
             InitializeSerial();
-        }   
+            _cancellationTokenSource = new CancellationTokenSource();
+            Task.Run(() => StartStateMonitoringAsync(_cancellationTokenSource.Token));
+            Task.Run(() => ReceiveSerial(_cancellationTokenSource.Token));
+        }
 
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
 
             SystemEvents.SessionSwitch += OnSessionSwitch;
-            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        }
 
-            // Register the F9 key as a hotkey
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            HwndSource source = HwndSource.FromHwnd(hwnd);
-            source.AddHook(WndProc);
-
-            RegisterHotKey(hwnd, HOTKEY_ID, 0, (uint)KeyInterop.VirtualKeyFromKey(System.Windows.Input.Key.F9));
+        private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+        {
+            if (e.Reason == SessionSwitchReason.SessionUnlock)
+            {
+                _pcLocked = false;
+            }
+            else if (e.Reason == SessionSwitchReason.SessionLock)
+            {
+                _pcLocked = true;
+            }
         }
 
         private void InitializeSerial()
         {
-            // Get all available COM ports on the system
+            // TODO Automatically choose correct port
             string[] availablePorts = SerialPort.GetPortNames();
+            string detectedPort = availablePorts.FirstOrDefault(port => port == "COM17");
 
-            // Optionally, you can filter or prioritize the ports
-            string detectedPort = availablePorts.FirstOrDefault(); // Use the first available port
-
-            if (detectedPort != null) 
+            if (detectedPort != null)
             {
-                _serialPort = new SerialPort(detectedPort, 9600) 
+                _serialPort = new SerialPort(detectedPort, 9600)
                 {
                     DataBits = 8,
                     Parity = Parity.None,
                     StopBits = StopBits.One,
-                    Handshake = Handshake.None
+                    Handshake = Handshake.None,
+                    DtrEnable = true,
+                    RtsEnable = true,
+                    WriteTimeout = 2000
                 };
-                try 
+                try
                 {
                     _serialPort.Open();
                     MessageBox.Show($"Connected to {detectedPort}");
                 }
-                catch (Exception ex) 
+                catch (Exception ex)
                 {
                     MessageBox.Show($"Error opening serial port {detectedPort}: {ex.Message}");
                 }
             }
-            else 
+            else
             {
                 MessageBox.Show("No available COM ports detected.");
                 _serialPort = null;
             }
         }
 
-        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        private async Task StartStateMonitoringAsync(CancellationToken token)
         {
-            if (e.Mode == PowerModes.Resume) 
+            while (!token.IsCancellationRequested)
             {
-                SendSerial("AWAKE_ACK");
+                string currentState = DetermineCurrentState();
+                SendSerial(currentState);
+                await Task.Delay(STATE_REFRESH, token);
             }
         }
 
-        async private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+        private string DetermineCurrentState()
         {
-            if (e.Reason == SessionSwitchReason.SessionUnlock) 
-            {
-                SendSerial("UNLOCK_ACK");
-                MessageBox.Show("UNLOCK_ACK");
-            }
-            if (await ReceiveSerialAsync("CONTROLLER_DETECTED", 10000, 20))
-            {
-                SendSerial("INIT_ACK");
-                MessageBox.Show("INIT_ACK");
-                OpenSteam();
-            }
+            return _pcLocked ? AWAKE_STATE : UNLOCKED_STATE;
         }
 
-        private async Task<bool> ReceiveSerialAsync(string signal, int timeout, int serialDelay)
+        private static void OpenSteam()
         {
-            int elapsed = 0;
-
-            while (elapsed < timeout)
+            try
             {
-                if (_serialPort != null && _serialPort.IsOpen && _serialPort.BytesToRead > 0)
-                {
-                    string receivedData = await Task.Run(() => _serialPort.ReadLine().Trim());
-
-                    if (receivedData == signal)
-                    {
-                        return true;
-                    }
-                }
-
-                await Task.Delay(serialDelay);
-                elapsed += serialDelay;
-            }
-
-            return false;
-        }
-
-        private void SendSerial(string message)
-        {
-            try 
-            {
-                if (_serialPort != null && _serialPort.IsOpen) 
-                {
-                    _serialPort.WriteLine(message);
-                }
-            }
-            catch (Exception) {
-                MessageBox.Show($"Error sending serial: {message}");
-            }
-        }
-
-        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
-        {
-            if (msg == WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID) 
-            {
-                OpenSteam();
-                handled = true;
-            }
-            return IntPtr.Zero;
-        }
-
-        private void OpenSteam() 
-        {
-            try {
-                ProcessStartInfo psi = new ProcessStartInfo 
+                ProcessStartInfo psi = new()
                 {
                     FileName = "steam://open/bigpicture",
                     UseShellExecute = true
                 };
 
-                Process.Start(psi);
-                MessageBox.Show("Controller detected, launching Steam in Big Picture mode via URI...");
+                Process steamProcess = Process.Start(psi);
+
+                // Wait for Steam to be ready for input
+                steamProcess.WaitForInputIdle();
+
+                // Bring Steam to the foreground
+                IntPtr hWnd = steamProcess.MainWindowHandle;
+                if (hWnd != IntPtr.Zero)
+                {
+                    SetForegroundWindow(hWnd);
+                }
+                else
+                {
+                    // If MainWindowHandle is not available, try to find and bring any Steam window to the foreground
+                    BringRunningSteamToForeground();
+                }
             }
-            catch (Exception ex) {
+            catch (Exception ex)
+            {
                 MessageBox.Show($"Error: {ex.Message}");
+            }
+        }
+
+        private static void BringRunningSteamToForeground()
+        {
+            // Try to find a running Steam process and bring its window to the foreground
+            Process[] steamProcesses = Process.GetProcessesByName("steam");
+
+            foreach (var process in steamProcesses)
+            {
+                IntPtr hWnd = process.MainWindowHandle;
+                if (hWnd != IntPtr.Zero)
+                {
+                    SetForegroundWindow(hWnd);
+                    break; // Bring the first found Steam window to the foreground
+                }
+            }
+        }
+
+        private void SendSerial(string message)
+        {
+            try
+            {
+                if (_serialPort != null && _serialPort.IsOpen)
+                {
+                    _serialPort.WriteLine(message);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error sending serial: {ex.Message}");
+            }
+        }
+
+        private async Task ReceiveSerial(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    if (_serialPort != null && _serialPort.IsOpen)
+                    {
+                        string? incomingMessage = _serialPort.ReadLine();
+                        _serialPort.DiscardInBuffer();
+
+                        if (!string.IsNullOrEmpty(incomingMessage) && incomingMessage.Trim() == START_COMMAND)
+                        {
+                            OpenSteam();
+                        }
+                    }
+                    await Task.Delay(100, token);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error receiving serial data: {ex.Message}");
             }
         }
 
         protected override void OnClosed(EventArgs e)
         {
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            UnregisterHotKey(hwnd, HOTKEY_ID);
-
-            SystemEvents.SessionSwitch -= OnSessionSwitch;
-            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-
             if (_serialPort != null && _serialPort.IsOpen) _serialPort.Close();
 
+            _cancellationTokenSource.Cancel();
             base.OnClosed(e);
         }
-
     }
 }
