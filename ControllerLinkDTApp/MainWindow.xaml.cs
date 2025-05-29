@@ -8,12 +8,10 @@ using System.Threading;
 using System.Threading.Tasks;
 
 // Next steps:
-// GIT
+// Refactoring
 // Close start menu
 // One button start / prevent pc from connecting to controller during unlock
 // Option to sleep computer when steam is closed (only when a session is "active" through this program)
-
-// Refactoring
 
 namespace ControllerLinkDTApp
 {
